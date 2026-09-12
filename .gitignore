@@ -1,0 +1,12 @@
+# backend
+backend/.env
+backend/civicvoice.db
+backend/__pycache__/
+*.pyc
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# misc
+.DS_Store
