@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TRANSLATIONS } from "./translations";
+import { processCitizenLocal, getFollowupLocal, getStatsLocal } from "./clientEvaluator";
+import { SCHEMES_DATA } from "./schemesData";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -169,8 +171,10 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setStatsData(data);
+        return;
       }
     } catch (e) {}
+    setStatsData(getStatsLocal());
   }
 
   function showToast(msg) {
@@ -217,7 +221,22 @@ export default function App() {
         setFollowup(null);
       }
     } catch (err) {
-      setError("Couldn't reach CivicVoice backend. Ensure server is running at http://localhost:8000.");
+      // Automatic client-side fallback for static deployments (e.g. GitHub Pages)
+      const localData = processCitizenLocal(phoneNum, textToProcess);
+      setResult(localData);
+      setStatsData(getStatsLocal());
+      const hasPossible = localData.matched_schemes.some((s) => s.status === "possible");
+      if (hasPossible) {
+        const localFollowup = getFollowupLocal(phoneNum, language);
+        if (localFollowup && localFollowup.has_followup) {
+          setFollowup(localFollowup);
+          setFollowupAnswer("");
+        } else {
+          setFollowup(null);
+        }
+      } else {
+        setFollowup(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -236,11 +255,20 @@ export default function App() {
         if (data.has_followup) {
           setFollowup(data);
           setFollowupAnswer("");
+          return;
         } else {
           setFollowup(null);
+          return;
         }
       }
     } catch (e) {
+      const localFollowup = getFollowupLocal(phoneNum, lang);
+      if (localFollowup && localFollowup.has_followup) {
+        setFollowup(localFollowup);
+        setFollowupAnswer("");
+      } else {
+        setFollowup(null);
+      }
     } finally {
       setFollowupLoading(false);
     }
@@ -284,15 +312,59 @@ export default function App() {
       setDraft(data.draft_text);
       setDraftSchemeName(data.scheme_name || "Application Form");
     } catch (err) {
-      setError("Couldn't generate text draft. Please try again.");
+      const scheme = SCHEMES_DATA.find((s) => s.id === schemeId);
+      if (scheme) {
+        const profile = result?.profile || {};
+        const profileLines = Object.entries(profile)
+          .filter(([k]) => k !== "raw_situation_summary")
+          .map(([k, v]) => `  • ${k.replace('_', ' ').toUpperCase()}: ${v}`)
+          .join("\n");
+        const localDraft = `================================================================================
+           GOVERNMENT OF INDIA — JAN SEVA SCHEME APPLICATION DRAFT
+================================================================================
+Application Reference: CV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${phone.slice(-4) || "1001"}
+Date of Generation   : ${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}
+Primary Contact (Key): +91 ${phone.trim()}
+
+1. TARGET WELFARE SCHEME
+--------------------------------------------------------------------------------
+Scheme Name     : ${scheme.name}
+Category        : ${scheme.category.replace("_", " ").toUpperCase()}
+Official Benefit: ${scheme.benefit}
+Statutory Clause: "${scheme.clause}"
+Official Portal : ${scheme.source_url}
+
+2. APPLICANT VERIFIED PARTICULARS
+--------------------------------------------------------------------------------
+${profileLines || "  • Self-attested upon submission"}
+
+3. MANDATORY DOCUMENTS CHECKLIST
+--------------------------------------------------------------------------------
+${scheme.apply_docs.map((d) => `  [ ] ${d}`).join("\n")}
+
+4. SELF DECLARATION
+--------------------------------------------------------------------------------
+I hereby declare that the particulars furnished above are true, complete, and
+correct to the best of my knowledge and belief. Generated via CivicVoice.
+
+Applicant Signature: _______________________      Date: ______________
+================================================================================`;
+        setDraft(localDraft);
+        setDraftSchemeName(scheme.name);
+      }
     } finally {
       setDraftLoading(false);
     }
   }
 
   function handlePdfDownload(schemeId) {
-    const url = `${API_BASE}/api/draft/pdf?phone=${encodeURIComponent(phone.trim())}&scheme_id=${encodeURIComponent(schemeId)}`;
-    window.open(url, "_blank");
+    if (API_BASE) {
+      const url = `${API_BASE}/api/draft/pdf?phone=${encodeURIComponent(phone.trim())}&scheme_id=${encodeURIComponent(schemeId)}`;
+      window.open(url, "_blank");
+    } else {
+      handleDraftText(schemeId);
+      showToast(language === "hi-IN" ? "आधिकारिक आवेदन ड्राफ्ट तैयार किया गया!" : "Official application draft prepared!");
+    }
   }
 
   function stopSpeaking() {
